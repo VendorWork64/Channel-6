@@ -7,9 +7,10 @@ const app = document.getElementById("app")!;
 const overlay = document.getElementById("overlay")!;
 const debugView = new URLSearchParams(location.search).has("debug");
 const rawView = new URLSearchParams(location.search).has("raw");
+const postEnabled = false; // временно выключен ASCII/VHS-эффект
 if (debugView || rawView) overlay.classList.add("hidden");
 
-const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -18,7 +19,7 @@ app.appendChild(renderer.domElement);
 const camera = new THREE.PerspectiveCamera(
   68,
   window.innerWidth / window.innerHeight,
-  0.05,
+  0.15,
   40,
 );
 camera.rotation.order = "YXZ";
@@ -45,6 +46,7 @@ if (debugView || rawView) {
   player.yaw = (yawDeg * Math.PI) / 180;
   player.pitch = (pitchDeg * Math.PI) / 180;
   camera.rotation.set(player.pitch, player.yaw, 0);
+  if (debugView) (window as unknown as { __scene: THREE.Scene }).__scene = world.scene;
 }
 
 const keys = new Set<string>();
@@ -147,7 +149,7 @@ function frame() {
   }
 
   world.update(time, dt);
-  if (rawView) {
+  if (!postEnabled || rawView) {
     renderer.render(world.scene, camera);
   } else {
     post.render(world.scene, camera, time);

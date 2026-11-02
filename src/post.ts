@@ -50,10 +50,10 @@ void main() {
   scene = pow(scene, vec3(0.4545)); // render target holds linear values
 
   float lum = dot(scene, vec3(0.299, 0.587, 0.114));
-  float level = clamp((lum - 0.1) * 2.1, 0.0, 1.0);
-  level = pow(level, 1.1);
+  float level = clamp((lum - 0.04) * 2.05, 0.0, 1.0);
+  level = pow(level, 1.05);
 
-  float dith = (bayer4(cellId) - 0.47) * 0.1;
+  float dith = (bayer4(cellId) - 0.47) * 0.045;
   level = clamp(level + dith, 0.0, 1.0);
   float idx = floor(level * (uGlyphs - 1.0) + 0.5);
 
@@ -65,17 +65,17 @@ void main() {
 
   vec3 tint = vec3(0.86, 1.04, 0.96);
   vec3 col = scene * glyph * 2.2;
-  col = mix(col, vec3(level) * tint, 0.72);
+  col = mix(col, vec3(level) * tint, 0.62);
   col += vec3(0.02, 0.03, 0.024) * glyph;
 
-  float scan = 0.8 + 0.2 * abs(sin(pix.y * 3.14159 / max(2.0, uCell.y * 0.5)));
+  float scan = 0.88 + 0.12 * abs(sin(pix.y * 3.14159 / max(2.0, uCell.y * 0.5)));
   col *= scan;
 
   float noise = fract(sin(dot(pix + vec2(uTime * 57.0, uTime * 31.0), vec2(12.9898, 78.233))) * 43758.5453);
-  col += (noise - 0.5) * 0.028 * (1.0 - level * 0.6);
+  col += (noise - 0.5) * 0.015 * (1.0 - level * 0.6);
 
   vec2 q = pix / uRes;
-  float vig = 1.0 - 0.9 * pow(length((q - 0.5) * vec2(1.0, 0.92)) * 1.3, 2.0);
+  float vig = 1.0 - 0.68 * pow(length((q - 0.5) * vec2(1.0, 0.92)) * 1.3, 2.0);
   col *= clamp(vig, 0.0, 1.0);
 
   gl_FragColor = vec4(col, 1.0);
@@ -123,8 +123,8 @@ export class Post {
   }
 
   resize(width: number, height: number, dpr: number) {
-    // keep roughly 120-170 character columns regardless of window size
-    const cols = Math.min(200, Math.max(96, Math.round(width / 11)));
+    // keep roughly 130-190 character columns regardless of window size
+    const cols = Math.min(210, Math.max(100, Math.round(width / 10)));
     this.cellW = (width * dpr) / cols;
     this.cellH = this.cellW * 1.55;
 

@@ -6,7 +6,7 @@ export function makeNoiseTexture(
   base: RGB,
   variance = 22,
   stains = 0,
-  size = 64,
+  size = 256,
 ): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = size;
@@ -28,15 +28,16 @@ export function makeNoiseTexture(
     const y = Math.random() * size;
     const r = 4 + Math.random() * size * 0.28;
     const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, "rgba(10, 12, 10, 0.55)");
+    g.addColorStop(0, "rgba(10, 12, 10, 0.38)");
     g.addColorStop(1, "rgba(10, 12, 10, 0)");
     ctx.fillStyle = g;
     ctx.fillRect(x - r, y - r, r * 2, r * 2);
   }
 
   const tex = new THREE.CanvasTexture(canvas);
-  tex.magFilter = THREE.NearestFilter;
-  tex.minFilter = THREE.NearestFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.anisotropy = 8;
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
   tex.colorSpace = THREE.SRGBColorSpace;

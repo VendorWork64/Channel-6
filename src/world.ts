@@ -24,7 +24,7 @@ const ARCHIVE_Y = -3;
 export function buildWorld(): World {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x030507);
-  scene.fog = new THREE.Fog(0x05080b, 3.0, 22);
+  scene.fog = new THREE.Fog(0x05080b, 3.0, 14.7);
 
   const colliders: Collider[] = [];
 
@@ -47,6 +47,18 @@ export function buildWorld(): World {
     emissive: 0x0e100e,
   });
 
+  // Walls and trims meet with exactly flush faces, which makes coplanar
+  // surfaces fight for depth. Give every mesh a deterministic offset of a few
+  // millimetres: far below what is visible, far above depth-buffer precision.
+  let driftId = 0;
+  const GOLDEN = 0.618033988749895;
+  function drift(m: THREE.Mesh) {
+    const i = ++driftId;
+    m.position.x += (((i * GOLDEN) % 1) - 0.5) * 0.008;
+    m.position.z += (((i * GOLDEN * GOLDEN) % 1) - 0.5) * 0.008;
+    m.position.y += (((i * GOLDEN * GOLDEN * GOLDEN) % 1) - 0.5) * 0.005;
+  }
+
   function addWall(
     cx: number,
     cz: number,
@@ -58,6 +70,7 @@ export function buildWorld(): World {
   ) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, y1 - y0, d), mat);
     m.position.set(cx, (y0 + y1) / 2, cz);
+    drift(m);
     scene.add(m);
     colliders.push({
       minX: cx - w / 2,
@@ -80,6 +93,7 @@ export function buildWorld(): World {
   ) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     m.position.set(cx, cy, cz);
+    drift(m);
     scene.add(m);
     return m;
   }
@@ -110,11 +124,11 @@ export function buildWorld(): World {
   addWall(-8.15, 1.4, 0.3, 7.8); // left, south of server-room door
   addWall(8.15, 0, 0.3, 10.6); // right
   // lintel over the server-room doorway: visual only, colliders ignore Y
-  addBox(-8.15, (2.3 + H) / 2, -3.25, 0.3, H - 2.3, 1.5, wallMat);
+  addBox(-8.15, (2.3 + H) / 2, -3.25, 0.34, H - 2.3, 1.5, wallMat);
   addWall(-6.08, -5.15, 4.2, 0.3); // front, left of door
   addWall(2.93, -5.15, 10.65, 0.3); // front, right of door
   // lintel: visual only — colliders are 2D in XZ, a collider here would seal the doorway
-  addBox(-3.19, (2.3 + H) / 2, -5.15, 1.58, H - 2.3, 0.3, wallMat);
+  addBox(-3.19, (2.3 + H) / 2, -5.15, 1.58, H - 2.3, 0.34, wallMat);
 
   const doorMat = new THREE.MeshLambertMaterial({ color: 0x2c2e2a, emissive: 0x141614 });
   const door = new THREE.Mesh(new THREE.BoxGeometry(1.16, 2.28, 0.07), doorMat);
@@ -144,7 +158,7 @@ export function buildWorld(): World {
     new THREE.PlaneGeometry(1.1, 0.27),
     new THREE.MeshBasicMaterial({ map: signTex }),
   );
-  sign.position.set(-3.2, 2.62, -5.0);
+  sign.position.set(-3.2, 2.62, -4.95);
   sign.rotation.y = Math.PI;
   scene.add(sign);
 
@@ -200,10 +214,10 @@ export function buildWorld(): World {
   addCeiling(-10.65, -3.15, 5, 4, H);
   addWall(-13.15, -3.15, 0.3, 4.3); // west
   addWall(-10.65, -5.15, 5.3, 0.3); // north
-  addWall(-10.65, -1.15, 5.3, 0.3); // south
+  addWall(-10.725, -1.15, 5.15, 0.3); // south, end tucked into the control-room wall
 
-  addBox(-8.15, 1.18, -4.0, 0.3, 2.36, 0.08, frameMat);
-  addBox(-8.15, 1.18, -2.5, 0.3, 2.36, 0.08, frameMat);
+  addBox(-8.15, 1.18, -4.0, 0.36, 2.36, 0.08, frameMat);
+  addBox(-8.15, 1.18, -2.5, 0.36, 2.36, 0.08, frameMat);
   const serverDoor = new THREE.Mesh(new THREE.BoxGeometry(0.07, 2.28, 1.12), doorMat);
   serverDoor.position.set(-8.55, 1.14, -3.95);
   serverDoor.rotation.y = 0.55;
@@ -236,13 +250,13 @@ export function buildWorld(): World {
   addCeiling(-3, -9.15, 2.3, 8.0, H);
   addWall(-4.15, -12.65, 0.3, 1.0); // west, north piece
   addWall(-4.15, -7.43, 0.3, 4.85); // west, south piece
-  addWall(-1.85, -9.15, 0.3, 8.3); // east
+  addWall(-1.85, -9.15, 0.3, 8.0); // east, ends inside the front and dead-end walls
   // dead-end cap, split by the toilet doorway
   addWall(-4.45, -13.15, 1.1, 0.3);
   addWall(-1.7, -13.15, 1.4, 0.3);
-  addBox(-3.15, (2.3 + H) / 2, -13.15, 1.5, H - 2.3, 0.3, wallMat); // lintel, visual only
-  addBox(-3.9, 1.18, -13.15, 0.08, 2.36, 0.3, frameMat);
-  addBox(-2.4, 1.18, -13.15, 0.08, 2.36, 0.3, frameMat);
+  addBox(-3.15, (2.3 + H) / 2, -13.15, 1.5, H - 2.3, 0.34, wallMat); // lintel, visual only
+  addBox(-3.9, 1.18, -13.15, 0.08, 2.36, 0.36, frameMat);
+  addBox(-2.4, 1.18, -13.15, 0.08, 2.36, 0.36, frameMat);
 
   // ---------- TOILET / SHOWER (north of corridor A) ----------
   addFloor(-3, -16.15, 4, 6, 0, floorMat);
@@ -279,23 +293,23 @@ export function buildWorld(): World {
   addBox(-2.3, 2.9, -9.1, 0.05, 0.05, 7.9, pipeMat);
 
   // ---------- CORRIDOR B (west) ----------
-  addFloor(-9.1, -11, 10.3, 2.3, 0, floorMat);
-  addCeiling(-9.1, -11, 10.3, 2.3, H);
+  addFloor(-9.1, -11, 10.3, 2.3, 0.002, floorMat);
+  addCeiling(-9.1, -11, 10.3, 2.3, H - 0.002);
   addWall(-9.15, -12.15, 10.3, 0.3); // north
   addWall(-9.15, -9.85, 10.3, 0.3); // south
   addWall(-14.15, -12.05, 0.3, 0.25); // west posts
   addWall(-14.15, -9.95, 0.3, 0.25);
 
   // ---------- STAIRWELL ----------
-  addCeiling(-17, -11, 6.3, 2.6, H);
+  addCeiling(-17, -11, 6.3, 2.6, H - 0.03); // below corridor B's ceiling plane: no z-fighting
   addWall(-16.075, -12.15, 4.15, 0.3, ARCHIVE_Y, H); // north, right of the technical-stair opening
   addWall(-16.175, -9.85, 4.35, 0.3, ARCHIVE_Y, H); // south, right of basement door
-  addBox(-19.175, (-0.05 + H) / 2, -9.85, 1.65, H + 0.05, 0.3, wallMat); // lintel above the archive door
+  addBox(-19.175, (-0.05 + H) / 2, -9.85, 1.65, H + 0.05, 0.34, wallMat); // lintel above the archive door
   addWall(-20.15, -11, 0.3, 2.6, ARCHIVE_Y, H); // west
   // face under the top landing on the corridor side (no collider: below the floor)
   addBox(-14.05, ARCHIVE_Y / 2, -11, 0.3, -ARCHIVE_Y, 2.3, wallMat);
-  addFloor(-14.33, -11, 0.75, 2.3, 0, floorMat); // top landing
-  addFloor(-19.35, -11, 1.7, 2.3, ARCHIVE_Y, darkFloorMat); // bottom landing
+  addFloor(-14.33, -11, 0.75, 2.3, 0.02, floorMat); // top landing, above corridor B's floor plane
+  addFloor(-19.35, -11, 1.7, 2.3, ARCHIVE_Y + 0.002, darkFloorMat); // bottom landing
 
   // steps descend westward from the top landing toward the archive door
   const stepMat = new THREE.MeshLambertMaterial({ color: 0x585c56, emissive: 0x141614 });
@@ -367,8 +381,8 @@ export function buildWorld(): World {
   addWall(-18.15, -13.675, 0.3, 3.05, -4.5, 0.3); // east
   addCeiling(-19.15, -13.675, 2.0, 3.05, 0.3);
   // visual lintels so the low service shaft never opens onto black void
-  addBox(-19.15, (0.3 + H) / 2, -12.15, 2.0, H - 0.3, 0.3, wallMat);
-  addBox(-19.15, (-1.35 + 0.3) / 2, -15.2, 2.0, 1.65, 0.3, wallMat);
+  addBox(-19.15, (0.3 + H) / 2, -12.15, 2.0, H - 0.3, 0.34, wallMat);
+  addBox(-19.15, (-1.35 + 0.3) / 2, -15.2, 2.0, 1.65, 0.34, wallMat);
   for (let k = 1; k <= 5; k++) {
     const top = -3 - 0.25 * k;
     const zc = -12.15 - (k - 0.5) * (3.05 / 6);
@@ -410,7 +424,7 @@ export function buildWorld(): World {
   mop.rotation.z = 0.18;
 
   // ---------- VENT CHAMBER (basement -> archive) ----------
-  addBox(-12.2, (-1.35 - 0.1) / 2, -15.8, 0.3, 1.25, 1.2, wallMat); // lintel over the basement opening
+  addBox(-12.2, (-1.35 - 0.1) / 2, -15.8, 0.34, 1.25, 1.2, wallMat); // lintel over the basement opening
   addWall(-10.7, -16.4, 3.0, 0.3, -4.5, -0.1); // north
   addWall(-11.3, -15.2, 1.8, 0.3, -4.5, -0.1); // south, west of the turn
   addWall(-10.4, -12.675, 0.3, 5.05, -4.5, -0.1); // west
@@ -433,9 +447,9 @@ export function buildWorld(): World {
   addWall(-23.225, -5.15, 6.45, 0.3, ARCHIVE_Y, -0.05); // south
 
   // doorway in the archive west wall
-  addBox(-20.15, -0.475, -9.25, 0.3, 0.85, 1.5, wallMat); // lintel, visual only
-  addBox(-20.15, -1.95, -10.0, 0.3, 2.1, 0.08, frameMat);
-  addBox(-20.15, -1.95, -8.5, 0.3, 2.1, 0.08, frameMat);
+  addBox(-20.15, -0.475, -9.25, 0.34, 0.85, 1.5, wallMat); // lintel, visual only
+  addBox(-20.15, -1.95, -10.0, 0.36, 2.1, 0.08, frameMat);
+  addBox(-20.15, -1.95, -8.5, 0.36, 2.1, 0.08, frameMat);
 
   const editTable = new THREE.MeshLambertMaterial({ color: 0x4a463c });
   addBox(-23.2, ARCHIVE_Y + 0.45, -7.65, 3.0, 0.9, 1.4, editTable);
@@ -515,7 +529,7 @@ export function buildWorld(): World {
   // desk lamp with a green shade in the control room
   addBox(-2.2, 1.0, 4.2, 0.16, 0.06, 0.16, new THREE.MeshLambertMaterial({ color: 0x2a2c28 }));
   addBox(-2.2, 1.18, 4.2, 0.04, 0.36, 0.04, new THREE.MeshLambertMaterial({ color: 0x2a2c28 }));
-  addBox(-2.2, 1.38, 4.2, 0.34, 0.16, 0.34, new THREE.MeshBasicMaterial({ color: 0x9fd8a8 }));
+  addBox(-2.2, 1.38, 4.18, 0.34, 0.16, 0.34, new THREE.MeshBasicMaterial({ color: 0x9fd8a8 }));
   const deskLamp = new THREE.PointLight(0xbfe8c0, 1.6, 5, 1.8);
   deskLamp.position.set(-2.2, 1.3, 4.0);
   scene.add(deskLamp);

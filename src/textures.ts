@@ -44,6 +44,39 @@ export function makeNoiseTexture(
   return tex;
 }
 
+const atlasLoader = new THREE.TextureLoader();
+
+export function makeWoodTexture(url: string): THREE.Texture {
+  return makeAtlasTexture(url, 0, 0, 256, 256);
+}
+
+export function makeAtlasTexture(
+  url: string,
+  sx: number,
+  sy: number,
+  sw: number,
+  sh: number,
+): THREE.Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = sw;
+  canvas.height = sh;
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = "#3a3d38";
+  ctx.fillRect(0, 0, sw, sh);
+  const tex = new THREE.Texture(canvas);
+  atlasLoader.load(url, (src) => {
+    ctx.drawImage(src.image as CanvasImageSource, sx, sy, sw, sh, 0, 0, sw, sh);
+    tex.needsUpdate = true;
+  });
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.anisotropy = 8;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 export const GLYPH_RAMP = " .,:;-=+*#%@";
 
 export function makeGlyphAtlas(cell = 32): THREE.CanvasTexture {

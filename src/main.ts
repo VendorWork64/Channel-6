@@ -1,10 +1,11 @@
 import * as THREE from "three";
-import { buildWorld, type Collider } from "./world";
+import { buildWorld, type Collider, type Door } from "./world";
 import { Post } from "./post";
 import { startHum } from "./audio";
 
 const app = document.getElementById("app")!;
 const overlay = document.getElementById("overlay")!;
+const promptEl = document.getElementById("prompt")!;
 const debugView = new URLSearchParams(location.search).has("debug");
 const rawView = new URLSearchParams(location.search).has("raw");
 const postEnabled = false; // временно выключен ASCII/VHS-эффект
@@ -28,13 +29,28 @@ camera.position.set(0, 1.65, -2.6);
 const world = buildWorld();
 const post = new Post(renderer);
 
+type Stance = "stand" | "crouch" | "prone";
+
+const EYE = { stand: 1.65, crouch: 0.98, prone: 0.45 };
+const STANCE_SPEED = { stand: 3.1, crouch: 1.5, prone: 0.72 };
+
 const player = {
   yaw: Math.PI,
   pitch: -0.02,
   radius: 0.36,
   speed: 3.1,
   sprint: 5.0,
+  stance: "stand" as Stance,
+  eye: EYE.stand,
+  feetY: 0,
+  vy: 0,
+  grounded: true,
 };
+
+const GRAVITY = 18;
+const JUMP_SPEED = 4.6;
+const DOUBLE_TAP_MS = 320;
+let lastCtrlTap = -Infinity;
 
 if (debugView || rawView) {
   const q = new URLSearchParams(location.search);
@@ -42,11 +58,15 @@ if (debugView || rawView) {
   const pz = parseFloat(q.get("pz") ?? "-2.6");
   const yawDeg = parseFloat(q.get("yaw") ?? "180");
   const pitchDeg = parseFloat(q.get("pitch") ?? "-1.1");
-  camera.position.set(px, world.groundHeightAt(px, pz) + 1.65, pz);
+  player.feetY = world.groundHeightAt(px, pz);
+  camera.position.set(px, player.feetY + player.eye, pz);
   player.yaw = (yawDeg * Math.PI) / 180;
   player.pitch = (pitchDeg * Math.PI) / 180;
   camera.rotation.set(player.pitch, player.yaw, 0);
-  if (debugView) (window as unknown as { __scene: THREE.Scene }).__scene = world.scene;
+  if (debugView) {
+    (window as unknown as { __scene: THREE.Scene }).__scene = world.scene;
+    (window as unknown as { __debug: unknown }).__debug = { camera, world, player, resolveCollisions };
+  }
 }
 
 const keys = new Set<string>();
@@ -71,20 +91,83 @@ document.addEventListener("mousemove", (e) => {
   player.pitch = THREE.MathUtils.clamp(player.pitch, -1.3, 1.3);
 });
 
+function crouchPress() {
+  const now = performance.now();
+  if (player.stance === "prone") {
+    player.stance = "stand";
+    lastCtrlTap = -Infinity;
+    return;
+  }
+  if (now - lastCtrlTap < DOUBLE_TAP_MS) {
+    player.stance = "prone";
+    lastCtrlTap = -Infinity;
+    return;
+  }
+  lastCtrlTap = now;
+  player.stance = "crouch";
+}
+
+function crouchRelease() {
+  if (player.stance === "crouch") player.stance = "stand";
+}
+
 window.addEventListener("keydown", (e) => {
   keys.add(e.code);
+  if (e.code === "Space") {
+    e.preventDefault();
+    if (!e.repeat && (locked || debugView) && player.grounded && player.stance !== "prone") {
+      player.vy = JUMP_SPEED;
+      player.grounded = false;
+    }
+  }
+  if ((e.code === "ControlLeft" || e.code === "ControlRight") && !e.repeat && (locked || debugView)) {
+    crouchPress();
+  }
+  if (e.code === "KeyE" && !e.repeat && (locked || debugView)) {
+    const door = findNearbyDoor();
+    if (door) world.toggleDoor(door, camera.position.x, camera.position.z);
+  }
 });
 
 window.addEventListener("keyup", (e) => {
   keys.delete(e.code);
+  if (e.code === "ControlLeft" || e.code === "ControlRight") crouchRelease();
 });
 
-window.addEventListener("blur", () => keys.clear());
+window.addEventListener("blur", () => {
+  keys.clear();
+  crouchRelease();
+});
 
-function resolveCollisions(pos: THREE.Vector3, colliders: Collider[], radius: number) {
-  const feet = pos.y - 1.65;
+const DOOR_REACH = 2.3;
+const DOOR_VIEW_DOT = 0.35;
+
+function findNearbyDoor(): Door | null {
+  const vx = -Math.sin(player.yaw);
+  const vz = -Math.cos(player.yaw);
+  let best = DOOR_REACH;
+  let found: Door | null = null;
+  for (const d of world.doors) {
+    const dx = d.center.x - camera.position.x;
+    const dz = d.center.z - camera.position.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist >= best) continue;
+    if (dist > 0.001 && (dx * vx + dz * vz) / dist < DOOR_VIEW_DOT) continue;
+    best = dist;
+    found = d;
+  }
+  return found;
+}
+
+function resolveCollisions(
+  pos: THREE.Vector3,
+  colliders: Collider[],
+  radius: number,
+  feetY = pos.y - 1.65,
+  bodyH = 1.65,
+) {
   for (const c of colliders) {
-    if (c.maxY !== undefined && !(c.maxY > feet + 0.2 && (c.minY ?? -Infinity) < feet + 1.6)) continue;
+    if (c.maxY !== undefined && !(c.maxY > feetY + 0.2 && (c.minY ?? -Infinity) < feetY + bodyH)) continue;
     const minX = c.minX - radius;
     const maxX = c.maxX + radius;
     const minZ = c.minZ - radius;
@@ -114,39 +197,66 @@ function frame() {
   if (!clock.stopped) clock.elapsed += dt;
   const time = clock.elapsed;
 
-  if (locked) {
-    const forward = (keys.has("KeyW") ? 1 : 0) - (keys.has("KeyS") ? 1 : 0);
-    const strafe = (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0);
+  if (locked || debugView) {
+    if (locked) {
+      const forward = (keys.has("KeyW") ? 1 : 0) - (keys.has("KeyS") ? 1 : 0);
+      const strafe = (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0);
 
-    if (forward !== 0 || strafe !== 0) {
-      const len = Math.hypot(forward, strafe);
-      const speed = keys.has("ShiftLeft") ? player.sprint : player.speed;
-      const sin = Math.sin(player.yaw);
-      const cos = Math.cos(player.yaw);
+      if (forward !== 0 || strafe !== 0) {
+        const len = Math.hypot(forward, strafe);
+        const speed =
+          player.stance === "stand"
+            ? keys.has("ShiftLeft")
+              ? player.sprint
+              : player.speed
+            : STANCE_SPEED[player.stance];
+        const sin = Math.sin(player.yaw);
+        const cos = Math.cos(player.yaw);
 
-      const dx = ((-sin * forward + cos * strafe) / len) * speed * dt;
-      const dz = ((-cos * forward - sin * strafe) / len) * speed * dt;
+        const dx = ((-sin * forward + cos * strafe) / len) * speed * dt;
+        const dz = ((-cos * forward - sin * strafe) / len) * speed * dt;
 
-      camera.position.x += dx;
-      camera.position.z += dz;
+        camera.position.x += dx;
+        camera.position.z += dz;
 
-      resolveCollisions(camera.position, world.colliders, player.radius);
-      camera.position.x = THREE.MathUtils.clamp(camera.position.x, world.bounds.minX, world.bounds.maxX);
-      camera.position.z = THREE.MathUtils.clamp(camera.position.z, world.bounds.minZ, world.bounds.maxZ);
+        resolveCollisions(camera.position, world.colliders, player.radius, player.feetY, player.eye);
+        camera.position.x = THREE.MathUtils.clamp(camera.position.x, world.bounds.minX, world.bounds.maxX);
+        camera.position.z = THREE.MathUtils.clamp(camera.position.z, world.bounds.minZ, world.bounds.maxZ);
 
-      bobPhase += dt * speed * 2.6;
-    } else {
-      bobPhase += dt * 1.2;
+        bobPhase += dt * speed * (player.stance === "stand" ? 2.6 : 2.0);
+      } else {
+        bobPhase += dt * (player.stance === "prone" ? 0.6 : 1.2);
+      }
     }
 
-    const groundY = world.groundHeightAt(
-      camera.position.x,
-      camera.position.z,
-      camera.position.y - 1.65,
-    );
-    camera.position.y = groundY + 1.65 + Math.sin(bobPhase) * 0.028;
+    const groundY = world.groundHeightAt(camera.position.x, camera.position.z, player.feetY);
+    if (player.grounded) {
+      if (groundY > player.feetY - 0.45) {
+        player.feetY = groundY;
+      } else {
+        player.grounded = false;
+        player.vy = 0;
+      }
+    }
+    if (!player.grounded) {
+      player.vy -= GRAVITY * dt;
+      player.feetY += player.vy * dt;
+      if (player.feetY <= groundY) {
+        player.feetY = groundY;
+        player.vy = 0;
+        player.grounded = true;
+      }
+    }
+
+    const targetEye = EYE[player.stance];
+    player.eye += (targetEye - player.eye) * Math.min(1, dt * 9);
+    const bobAmp = player.stance === "prone" ? 0.008 : player.stance === "crouch" ? 0.018 : 0.028;
+    camera.position.y = player.feetY + player.eye + Math.sin(bobPhase) * bobAmp;
     camera.rotation.set(player.pitch, player.yaw, Math.sin(bobPhase * 0.5) * 0.002);
   }
+
+  const doorNear = locked || debugView ? findNearbyDoor() : null;
+  promptEl.classList.toggle("visible", !!doorNear);
 
   world.update(time, dt);
   if (!postEnabled || rawView) {

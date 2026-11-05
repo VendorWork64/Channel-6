@@ -1,5 +1,12 @@
 import * as THREE from "three";
-import { makeGlowTexture, makeNoiseTexture, makeStaticCanvas } from "./textures";
+import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
+import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
+import {
+  makeAtlasTexture,
+  makeGlowTexture,
+  makeStaticCanvas,
+  makeWoodTexture,
+} from "./textures";
 
 export interface Collider {
   minX: number;
@@ -10,12 +17,28 @@ export interface Collider {
   maxY?: number;
 }
 
+export interface Door {
+  group: THREE.Group;
+  center: THREE.Vector3;
+  normal: { x: number; z: number };
+  hinge: { x: number; z: number };
+  leafW: number;
+  closedAngle: number;
+  targetAngle: number;
+  isOpen: boolean;
+  closedBox: { minX: number; maxX: number; minZ: number; maxZ: number };
+  collider: Collider;
+}
+
 export interface World {
   scene: THREE.Scene;
   colliders: Collider[];
+  doors: Door[];
+  toggleDoor: (door: Door, playerX: number, playerZ: number) => void;
   update: (time: number, dt: number) => void;
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
   groundHeightAt: (x: number, z: number, refY?: number) => number;
+  propsReady: Promise<void>;
 }
 
 const H = 3.2;
@@ -24,27 +47,73 @@ const ARCHIVE_Y = -3;
 export function buildWorld(): World {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x030507);
-  scene.fog = new THREE.Fog(0x05080b, 3.0, 14.7);
+  scene.fog = new THREE.Fog(0x05080b, 2.0, 9.8);
 
   const colliders: Collider[] = [];
 
-  const wallTex = makeNoiseTexture([132, 138, 136], 18, 14);
-  wallTex.repeat.set(4, 1.4);
-  const floorTex = makeNoiseTexture([118, 120, 114], 26, 26);
-  floorTex.repeat.set(8, 5);
-  const ceilTex = makeNoiseTexture([96, 100, 100], 14, 6);
-  const darkFloorTex = makeNoiseTexture([66, 68, 64], 22, 22);
-  darkFloorTex.repeat.set(10, 8);
+  function wood(file: string, tile: number, tint: number) {
+    const mat = new THREE.MeshLambertMaterial({
+      map: makeWoodTexture(`/wood/${file}`),
+      color: tint,
+      emissive: 0x0b0a08,
+    });
+    mat.userData.tile = tile;
+    return mat;
+  }
 
-  const wallMat = new THREE.MeshLambertMaterial({
-    map: wallTex,
-    emissive: 0x1e2523,
+  // wood_50_64_ is a 64 px tile: load it at its native size, otherwise the
+  // atlas loader crops it into the top-left quarter of a 256 canvas and the
+  // rest of every ceiling tile stays black
+  const ceilTex = makeAtlasTexture("/wood/wood_50_64_.png", 0, 0, 64, 64);
+  const ceilMat = new THREE.MeshLambertMaterial({
+    map: ceilTex,
+    color: 0xb5aea0,
+    emissive: 0x1a1712,
   });
-  const floorMat = new THREE.MeshLambertMaterial({ map: floorTex, emissive: 0x12140f });
-  const ceilMat = new THREE.MeshLambertMaterial({ map: ceilTex, emissive: 0x14181a });
-  const darkFloorMat = new THREE.MeshLambertMaterial({
-    map: darkFloorTex,
-    emissive: 0x0e100e,
+  ceilMat.userData.tile = 1.8;
+  ceilMat.emissiveMap = ceilTex;
+  ceilMat.emissive.setHex(0x3d3830);
+
+  const floorControlMat = wood("wood_23_256_.png", 1.6, 0x928b81); // block parquet
+  const floorServerMat = wood("wood_13_256_.png", 1.5, 0x9aa09c); // grey weathered boards
+  const floorCorridorAMat = wood("wood_8_256_.png", 1.8, 0x9c9488); // worn pale boards
+  const floorToiletMat = wood("wood_18_256_.png", 1.4, 0xa8a49a); // whitewashed boards
+  const floorCorridorBMat = wood("wood_21_256_.png", 1.5, 0x9a8b7f); // warm parquet
+  const floorStairMat = wood("wood_17_256_.png", 1.6, 0x8f8175); // dark worn boards
+  const floorArchiveMat = wood("wood_57_256_.png", 1.8, 0xa39a8c); // dark herringbone
+  const floorBasementMat = wood("wood_35_256_.png", 2.0, 0x8a7f72); // rough boards
+  const floorEditMat = wood("wood_27_256_.png", 1.8, 0x9c9285); // oak boards
+  const floorKitchenMat = wood("wood_13_256_.png", 1.9, 0x969c96); // scrubbed grey boards
+  const floorBedroomMat = wood("wood_41_256_.png", 1.7, 0x9a9285); // buff herringbone
+
+  // 2x2 wallpaper atlas: quadrants are inset a little to hide JPEG edge bleed.
+  // userData.tile is the world size of one wallpaper repeat, in metres.
+  const WALLPAPERS = "/walls/Wallpapers.jpeg";
+  const TRIMS = "/walls/Trims.jpeg";
+  function wallpaper(sx: number, sy: number, tile: number, tint: number) {
+    const mat = new THREE.MeshLambertMaterial({
+      map: makeAtlasTexture(WALLPAPERS, sx, sy, 122, 122),
+      color: tint,
+      emissive: 0x0c0f0d,
+    });
+    mat.userData.tile = tile;
+    return mat;
+  }
+  const wallGreenMat = wallpaper(3, 3, 2.0, 0x9fa89c); // control room, editing room
+  const wallYellowMat = wallpaper(131, 3, 1.7, 0xa89f8a); // corridor A, archive
+  const wallRedMat = wallpaper(3, 131, 2.2, 0x86786d); // corridor B
+  const wallPlasterMat = wallpaper(131, 131, 1.5, 0x90948d); // technical rooms
+  const wallWoodMat = wood("wood_7_256_.png", 1.6, 0x8f8579); // editing-room panelling
+
+  const frameMat = new THREE.MeshLambertMaterial({
+    map: makeAtlasTexture(TRIMS, 2, 2, 60, 124),
+    color: 0x8a8a84,
+    emissive: 0x080807,
+  });
+  const doorMat = new THREE.MeshLambertMaterial({
+    map: makeAtlasTexture(TRIMS, 66, 2, 60, 124),
+    color: 0x6e6459,
+    emissive: 0x080604,
   });
 
   // Walls and trims meet with exactly flush faces, which makes coplanar
@@ -59,6 +128,36 @@ export function buildWorld(): World {
     m.position.y += (((i * GOLDEN * GOLDEN * GOLDEN) % 1) - 0.5) * 0.005;
   }
 
+  // BoxGeometry maps every face to UV 0..1, which would stretch one wallpaper
+  // tile across a whole wall. Scale each face's UVs by its world dimensions so
+  // the pattern keeps a constant physical size.
+  function scaleWallUV(
+    geo: THREE.BoxGeometry,
+    w: number,
+    h: number,
+    d: number,
+    mat: THREE.Material,
+  ) {
+    const tile = (mat.userData as { tile?: number }).tile;
+    if (!tile) return;
+    const uv = geo.getAttribute("uv") as THREE.BufferAttribute;
+    const faces: [number, number][] = [
+      [d, h],
+      [d, h],
+      [w, d],
+      [w, d],
+      [w, h],
+      [w, h],
+    ];
+    for (let f = 0; f < 6; f++) {
+      const [fw, fh] = faces[f];
+      for (let i = f * 4; i < f * 4 + 4; i++) {
+        uv.setXY(i, uv.getX(i) * (fw / tile), uv.getY(i) * (fh / tile));
+      }
+    }
+    uv.needsUpdate = true;
+  }
+
   function addWall(
     cx: number,
     cz: number,
@@ -66,9 +165,11 @@ export function buildWorld(): World {
     d: number,
     y0 = 0,
     y1 = H,
-    mat: THREE.Material = wallMat,
+    mat: THREE.Material = wallPlasterMat,
   ) {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, y1 - y0, d), mat);
+    const geo = new THREE.BoxGeometry(w, y1 - y0, d);
+    scaleWallUV(geo, w, y1 - y0, d, mat);
+    const m = new THREE.Mesh(geo, mat);
     m.position.set(cx, (y0 + y1) / 2, cz);
     drift(m);
     scene.add(m);
@@ -91,22 +192,38 @@ export function buildWorld(): World {
     d: number,
     mat: THREE.Material,
   ) {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    const geo = new THREE.BoxGeometry(w, h, d);
+    scaleWallUV(geo, w, h, d, mat);
+    const m = new THREE.Mesh(geo, mat);
     m.position.set(cx, cy, cz);
     drift(m);
     scene.add(m);
     return m;
   }
 
+  function scalePlaneUV(geo: THREE.PlaneGeometry, w: number, d: number, mat: THREE.Material) {
+    const tile = (mat.userData as { tile?: number }).tile;
+    if (!tile) return;
+    const uv = geo.getAttribute("uv") as THREE.BufferAttribute;
+    for (let i = 0; i < uv.count; i++) {
+      uv.setXY(i, uv.getX(i) * (w / tile), uv.getY(i) * (d / tile));
+    }
+    uv.needsUpdate = true;
+  }
+
   function addFloor(cx: number, cz: number, w: number, d: number, y: number, mat: THREE.Material) {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat);
+    const geo = new THREE.PlaneGeometry(w, d);
+    scalePlaneUV(geo, w, d, mat);
+    const m = new THREE.Mesh(geo, mat);
     m.rotation.x = -Math.PI / 2;
     m.position.set(cx, y - 0.01, cz); // 1 cm below wall bases: avoids z-fighting
     scene.add(m);
   }
 
   function addCeiling(cx: number, cz: number, w: number, d: number, y: number) {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), ceilMat);
+    const geo = new THREE.PlaneGeometry(w, d);
+    scalePlaneUV(geo, w, d, ceilMat);
+    const m = new THREE.Mesh(geo, ceilMat);
     m.rotation.x = Math.PI / 2;
     m.position.set(cx, y + 0.01, cz);
     scene.add(m);
@@ -116,29 +233,152 @@ export function buildWorld(): World {
     colliders.push({ minX, maxX, minZ, maxZ, minY: y0, maxY: y1 });
   }
 
+  // ---------- DOORS ----------
+  // Every leaf hangs on a group pivoted at a jamb, so it swings like a real
+  // door. The lining (jambs, head, threshold) covers the reveal of the wall
+  // opening on both faces, so no gap or void is visible around a closed leaf.
+  const handleMat = new THREE.MeshLambertMaterial({ color: 0x676c63, emissive: 0x0a0c0b });
+  const doors: Door[] = [];
+  const DOOR_H = 2.3;
+  const JAMB = 0.05;
+
+  function makeDoor(ax: number, az: number, bx: number, bz: number) {
+    const dx = Math.sign(bx - ax);
+    const dz = Math.sign(bz - az);
+    const alongX = dz === 0;
+    const span = Math.abs(bx - ax) + Math.abs(bz - az);
+    const midX = (ax + bx) / 2;
+    const midZ = (az + bz) / 2;
+    const jambDepth = 0.4; // proud of both wall faces
+
+    for (const [ex, ez] of [
+      [ax, az],
+      [bx, bz],
+    ]) {
+      addBox(
+        ex,
+        DOOR_H / 2,
+        ez,
+        alongX ? JAMB : jambDepth,
+        DOOR_H,
+        alongX ? jambDepth : JAMB,
+        frameMat,
+      );
+    }
+    addBox(
+      midX,
+      DOOR_H - 0.035,
+      midZ,
+      alongX ? span - JAMB * 2 : jambDepth,
+      0.07,
+      alongX ? jambDepth : span - JAMB * 2,
+      frameMat,
+    );
+    addBox(
+      midX,
+      0.01,
+      midZ,
+      alongX ? span - JAMB * 2 : jambDepth + 0.06,
+      0.05,
+      alongX ? jambDepth + 0.06 : span - JAMB * 2,
+      frameMat,
+    );
+
+    const hingeX = ax + dx * 0.03;
+    const hingeZ = az + dz * 0.03;
+    const leafW = span - 0.06;
+    const group = new THREE.Group();
+    group.position.set(hingeX, 0, hingeZ);
+    const closedAngle = Math.atan2(-dz, dx);
+    group.rotation.y = closedAngle;
+
+    const leaf = new THREE.Mesh(new THREE.BoxGeometry(leafW, 2.2, 0.05), doorMat);
+    leaf.position.set(leafW / 2, 1.14, 0);
+    group.add(leaf);
+    for (const side of [-1, 1]) {
+      const lever = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.03, 0.03), handleMat);
+      lever.position.set(leafW - 0.16, 1.02, side * 0.038);
+      group.add(lever);
+      const plate = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.14, 0.022), handleMat);
+      plate.position.set(leafW - 0.1, 0.99, side * 0.037);
+      group.add(plate);
+    }
+    scene.add(group);
+
+    const closedBox = alongX
+      ? {
+          minX: Math.min(ax, bx),
+          maxX: Math.max(ax, bx),
+          minZ: az - 0.17,
+          maxZ: az + 0.17,
+        }
+      : {
+          minX: ax - 0.17,
+          maxX: ax + 0.17,
+          minZ: Math.min(az, bz),
+          maxZ: Math.max(az, bz),
+        };
+    const collider: Collider = { ...closedBox, minY: 0, maxY: H };
+    colliders.push(collider);
+
+    doors.push({
+      group,
+      center: new THREE.Vector3(midX, 1.15, midZ),
+      normal: alongX ? { x: 0, z: 1 } : { x: 1, z: 0 },
+      hinge: { x: hingeX, z: hingeZ },
+      leafW,
+      closedAngle,
+      targetAngle: closedAngle,
+      isOpen: false,
+      closedBox,
+      collider,
+    });
+  }
+
+  // Opens away from whoever operates it: the leaf swings to the far side.
+  function toggleDoor(door: Door, playerX: number, playerZ: number) {
+    door.isOpen = !door.isOpen;
+    if (!door.isOpen) {
+      door.targetAngle = door.closedAngle;
+      Object.assign(door.collider, door.closedBox);
+      return;
+    }
+    const side =
+      Math.sign(
+        (playerX - door.center.x) * door.normal.x + (playerZ - door.center.z) * door.normal.z,
+      ) || 1;
+    const wantX = -side * door.normal.x;
+    const wantZ = -side * door.normal.z;
+    const a = door.closedAngle + Math.PI / 2;
+    const b = door.closedAngle - Math.PI / 2;
+    door.targetAngle = Math.cos(a) * wantX - Math.sin(a) * wantZ > Math.cos(b) * wantX - Math.sin(b) * wantZ ? a : b;
+
+    // The open leaf still blocks movement: swap the doorway strip for the leaf strip.
+    const ex = door.hinge.x + wantX * door.leafW;
+    const ez = door.hinge.z + wantZ * door.leafW;
+    const pad = 0.08;
+    door.collider.minX = Math.min(door.hinge.x, ex) - (wantX === 0 ? pad : 0);
+    door.collider.maxX = Math.max(door.hinge.x, ex) + (wantX === 0 ? pad : 0);
+    door.collider.minZ = Math.min(door.hinge.z, ez) - (wantZ === 0 ? pad : 0);
+    door.collider.maxZ = Math.max(door.hinge.z, ez) + (wantZ === 0 ? pad : 0);
+  }
+
   // ---------- CONTROL ROOM (аппаратная) ----------
-  addFloor(0, 0, 16, 10, 0, floorMat);
+  addFloor(0, 0, 16, 10, 0, floorControlMat);
   addCeiling(0, 0, 16, 10, H);
-  addWall(0, 5.15, 16.6, 0.3); // back
-  addWall(-8.15, -4.65, 0.3, 1.3); // left, north of server-room door
-  addWall(-8.15, 1.4, 0.3, 7.8); // left, south of server-room door
-  addWall(8.15, 0, 0.3, 10.6); // right
+  addWall(0, 5.15, 16.6, 0.3, 0, H, wallGreenMat); // back
+  addWall(-8.15, -4.65, 0.3, 1.3, 0, H, wallGreenMat); // left, north of server-room door
+  addWall(-8.15, -0.25, 0.3, 4.5, 0, H, wallGreenMat); // left, between the two doorways
+  addWall(-8.15, 4.15, 0.3, 2.3, 0, H, wallGreenMat); // left, south of the bedroom doorway
+  addWall(8.15, 0, 0.3, 10.6, 0, H, wallGreenMat); // right
   // lintel over the server-room doorway: visual only, colliders ignore Y
-  addBox(-8.15, (2.3 + H) / 2, -3.25, 0.34, H - 2.3, 1.5, wallMat);
-  addWall(-6.08, -5.15, 4.2, 0.3); // front, left of door
-  addWall(2.93, -5.15, 10.65, 0.3); // front, right of door
+  addBox(-8.15, (2.3 + H) / 2, -3.25, 0.34, H - 2.3, 1.5, wallGreenMat);
+  addWall(-6.08, -5.15, 4.2, 0.3, 0, H, wallGreenMat); // front, left of door
+  addWall(2.93, -5.15, 10.65, 0.3, 0, H, wallGreenMat); // front, right of door
   // lintel: visual only — colliders are 2D in XZ, a collider here would seal the doorway
-  addBox(-3.19, (2.3 + H) / 2, -5.15, 1.58, H - 2.3, 0.34, wallMat);
+  addBox(-3.19, (2.3 + H) / 2, -5.15, 1.58, H - 2.3, 0.34, wallGreenMat);
 
-  const doorMat = new THREE.MeshLambertMaterial({ color: 0x2c2e2a, emissive: 0x141614 });
-  const door = new THREE.Mesh(new THREE.BoxGeometry(1.16, 2.28, 0.07), doorMat);
-  door.position.set(-3.78, 1.14, -5.84);
-  door.rotation.y = 1.3; // приоткрыта к стене коридора
-  scene.add(door);
-
-  const frameMat = new THREE.MeshLambertMaterial({ color: 0x555b54 });
-  addBox(-3.96, 1.18, -5.15, 0.08, 2.36, 0.14, frameMat);
-  addBox(-2.43, 1.18, -5.15, 0.08, 2.36, 0.14, frameMat);
+  makeDoor(-3.98, -5.15, -2.395, -5.15);
 
   const signCanvas = document.createElement("canvas");
   signCanvas.width = 128;
@@ -209,19 +449,255 @@ export function buildWorld(): World {
   }
   addCollider(-7.95, -6.85, -1.5, -0.7, 0, 2.6);
 
-  // ---------- SERVER ROOM (west of the control room) ----------
-  addFloor(-10.65, -3.15, 5, 4, 0, floorMat);
-  addCeiling(-10.65, -3.15, 5, 4, H);
-  addWall(-13.15, -3.15, 0.3, 4.3); // west
-  addWall(-10.65, -5.15, 5.3, 0.3); // north
-  addWall(-10.725, -1.15, 5.15, 0.3); // south, end tucked into the control-room wall
+  // ---------- CONTROL ROOM: corner desk + props from /public/models ----------
+  // Модели грузятся асинхронно, комната уже стоит. Материалы FBX ссылаются
+  // на мёртвые windows-пути, поэтому текстуры перенаправляются по имени файла.
+  const modelManager = new THREE.LoadingManager();
+  const MODEL_TEXTURES: Record<string, string> = {
+    "текстуры.png": "/models/pc/textures.png",
+    "png.png": "/models/chair/texture.png",
+    "internal_ground_ao_texture.jpeg": "/models/chair/ao.jpeg",
+    "paper and notes.png": "/models/corkboard/paper_and_notes.png",
+    "polaroid.png": "/models/corkboard/polaroid.png",
+    "newspaper.png": "/models/corkboard/newspaper.png",
+    "t_vhs.png": "/models/vhs/T_VHS.png",
+    "nokia-3310.jpg": "/models/nokia/nokia-3310.jpg",
+    "radio_1.png": "/models/radio/radio_1.png",
+    "material_base_color.png": "/models/sofa/Material_Base_color.png",
+  };
+  modelManager.setURLModifier((url) => {
+    const base = decodeURIComponent(url.split(/[\\/]/).pop() ?? "").toLowerCase();
+    return MODEL_TEXTURES[base] ?? url;
+  });
 
-  addBox(-8.15, 1.18, -4.0, 0.36, 2.36, 0.08, frameMat);
-  addBox(-8.15, 1.18, -2.5, 0.36, 2.36, 0.08, frameMat);
-  const serverDoor = new THREE.Mesh(new THREE.BoxGeometry(0.07, 2.28, 1.12), doorMat);
-  serverDoor.position.set(-8.55, 1.14, -3.95);
-  serverDoor.rotation.y = 0.55;
-  scene.add(serverDoor);
+  function markSrgb(root: THREE.Object3D) {
+    root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats) {
+        const mat = m as THREE.MeshPhongMaterial;
+        if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace;
+        if (mat.emissiveMap) mat.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+        mat.side = THREE.FrontSide;
+      }
+    });
+  }
+
+  // Пак хранит меши в общих мировых координатах: чтобы вытащить один предмет,
+  // запекаем его мировую матрицу в геометрию и обнуляем трансформ.
+  function extractMesh(source: THREE.Mesh, target: THREE.Object3D) {
+    source.updateWorldMatrix(true, false);
+    const geo = source.geometry.clone();
+    geo.applyMatrix4(source.matrixWorld);
+    const mesh = new THREE.Mesh(geo, source.material);
+    mesh.name = source.name;
+    target.add(mesh);
+    return mesh;
+  }
+
+  function settle(
+    obj: THREE.Object3D,
+    x: number,
+    z: number,
+    rotY: number,
+    scale: number,
+    baseY: number,
+  ) {
+    obj.scale.setScalar(scale);
+    obj.rotation.y = rotY;
+    obj.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(obj);
+    const center = box.getCenter(new THREE.Vector3());
+    obj.position.x += x - center.x;
+    obj.position.z += z - center.z;
+    obj.position.y += baseY - box.min.y;
+    obj.updateMatrixWorld(true);
+  }
+
+  const DESK_X = 7.0;
+  const DESK_Z = -4.42;
+  const DESK_TOP = 0.816;
+  addCollider(6.0, 8.0, -4.98, -3.86, 0, 0.9);
+
+  async function loadDesk() {
+    const obj = await new OBJLoader(modelManager).loadAsync("/models/table/table.obj");
+    const tex = new THREE.TextureLoader(modelManager).load("/models/table/table_color.jpg");
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    const mat = new THREE.MeshLambertMaterial({ map: tex, color: 0xb8b2a5 });
+    obj.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh) mesh.material = mat;
+    });
+    settle(obj, DESK_X, DESK_Z, -Math.PI / 2, 1, 0);
+    scene.add(obj);
+  }
+
+  async function loadCorkboard() {
+    const fbx = await new FBXLoader(modelManager).loadAsync("/models/corkboard/board.fbx");
+    fbx.updateMatrixWorld(true);
+    markSrgb(fbx);
+    // Экспорт FBX потерял текстуру доски, но UV всех мешей лежат в атласе
+    // paper_and_notes.png, поэтому назначаем атлас вручную.
+    const atlas = new THREE.TextureLoader(modelManager).load("/models/corkboard/paper_and_notes.png");
+    atlas.colorSpace = THREE.SRGBColorSpace;
+    atlas.anisotropy = 4;
+    const group = new THREE.Group();
+    fbx.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh || mesh.name === "Wall002") return;
+      extractMesh(mesh, group);
+    });
+    group.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats) {
+        const mat = m as THREE.MeshPhongMaterial;
+        mat.map = atlas;
+        mat.color.setHex(0xffffff);
+        mat.emissiveMap = atlas;
+        mat.emissive.setHex(0x1c1a15);
+        mat.needsUpdate = true;
+      }
+    });
+    group.scale.setScalar(0.0072); // доска ~0.99 x 0.62 м
+    group.rotation.y = 0; // лицом в комнату (+z от передней стены)
+    group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(group);
+    const c = box.getCenter(new THREE.Vector3());
+    group.position.x += 6.4 - c.x;
+    group.position.y += 1.5 - c.y;
+    group.position.z += -4.94 - c.z;
+    scene.add(group);
+  }
+
+  async function loadPc() {
+    const fbx = await new FBXLoader(modelManager).loadAsync("/models/pc/pc.fbx");
+    fbx.updateMatrixWorld(true);
+    markSrgb(fbx);
+    const group = new THREE.Group();
+    fbx.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh) extractMesh(mesh, group);
+    });
+    // Фронт комплекта (клавиатура, экран, панель блока) смотрит на +Z —
+    // в комнату. Весь набор ~1.0 x 0.9 м, в правом углу стола.
+    settle(group, 7.42, -4.52, 0, 0.0078, DESK_TOP);
+    scene.add(group);
+  }
+
+  async function loadVhs() {
+    const fbx = await new FBXLoader(modelManager).loadAsync("/models/vhs/vhs.fbx");
+    fbx.updateMatrixWorld(true);
+    markSrgb(fbx);
+    let source: THREE.Mesh | null = null;
+    fbx.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh && mesh.name === "VHSPlayer") source = mesh;
+    });
+    if (!source) return;
+    const group = new THREE.Group();
+    extractMesh(source, group);
+    settle(group, 6.62, -4.6, 0, 0.00525, DESK_TOP);
+    scene.add(group);
+  }
+
+  async function loadNokia() {
+    const fbx = await new FBXLoader(modelManager).loadAsync("/models/nokia/nokia.fbx");
+    fbx.updateMatrixWorld(true);
+    markSrgb(fbx);
+    const group = new THREE.Group();
+    fbx.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh) extractMesh(mesh, group);
+    });
+    settle(group, 6.22, -4.06, -0.7, 0.00035, DESK_TOP);
+    scene.add(group);
+  }
+
+  async function loadRadio() {
+    const fbx = await new FBXLoader(modelManager).loadAsync("/models/radio/radio_1.fbx");
+    fbx.updateMatrixWorld(true);
+    markSrgb(fbx);
+    const group = new THREE.Group();
+    fbx.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh) extractMesh(mesh, group);
+    });
+    settle(group, 6.15, -4.62, -Math.PI / 2, 0.018, DESK_TOP);
+    scene.add(group);
+  }
+
+  // Офисный стул перед столом, сиденьем к столу.
+  addCollider(6.76, 7.44, -3.68, -3.02, 0, 1.1);
+  async function loadChair() {
+    const fbx = await new FBXLoader(modelManager).loadAsync("/models/chair/chair.fbx");
+    fbx.updateMatrixWorld(true);
+    markSrgb(fbx);
+    const group = new THREE.Group();
+    fbx.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.geometry.computeBoundingBox();
+      if (Number.isNaN(mesh.geometry.boundingBox!.min.x)) return; // вырожденный служебный меш
+      extractMesh(mesh, group);
+    });
+    settle(group, 7.1, -3.35, -Math.PI / 2, 0.002, 0);
+    scene.add(group);
+  }
+
+  // Диван в правом дальнем углу аппаратной, спинкой к задней стене.
+  addCollider(5.95, 8.0, 4.4, 5.1, 0, 1.1);
+  async function loadSofa() {
+    const fbx = await new FBXLoader(modelManager).loadAsync("/models/sofa/Sofa.fbx");
+    fbx.updateMatrixWorld(true);
+    markSrgb(fbx);
+    const group = new THREE.Group();
+    fbx.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.geometry.computeBoundingBox();
+      if (Number.isNaN(mesh.geometry.boundingBox!.min.x)) return; // вырожденный служебный меш
+      extractMesh(mesh, group);
+    });
+    // FBX не ссылается на файл текстуры — назначаем атлас вручную.
+    const tex = new THREE.TextureLoader().load("/models/sofa/Material_Base_color.png");
+    tex.colorSpace = THREE.SRGBColorSpace;
+    group.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.material = new THREE.MeshPhongMaterial({ map: tex });
+    });
+    // Длина дивана вдоль оси Z модели (~805 единиц); поворот кладёт её вдоль X,
+    // фронт (лицо +X у модели) после π/2 смотрит на -Z — в комнату.
+    settle(group, 7.0, 4.55, Math.PI / 2, 0.0025, 0);
+    scene.add(group);
+  }
+
+  const propsReady = Promise.all([
+    loadDesk(),
+    loadCorkboard(),
+    loadPc(),
+    loadVhs(),
+    loadNokia(),
+    loadRadio(),
+    loadChair(),
+    loadSofa(),
+  ]).then(
+    () => undefined,
+    (err) => console.error("control-room props failed", err),
+  );
+
+  // ---------- SERVER ROOM (west of the control room) ----------
+  addFloor(-10.65, -3.15, 5, 4, 0, floorServerMat);
+  addCeiling(-10.65, -3.15, 5, 4, H);
+  addWall(-13.15, -3.15, 0.3, 4.3, 0, H, wallPlasterMat); // west
+  addWall(-10.65, -5.15, 5.3, 0.3, 0, H, wallPlasterMat); // north
+  addWall(-10.725, -1.15, 5.15, 0.3, 0, H, wallPlasterMat); // south, end tucked into the control-room wall
+
+  makeDoor(-8.15, -4.0, -8.15, -2.5);
 
   const rackMat = new THREE.MeshLambertMaterial({ color: 0x252b2b, emissive: 0x0d1414 });
   const rackLed = new THREE.MeshBasicMaterial({ color: 0x6fd88a });
@@ -246,26 +722,31 @@ export function buildWorld(): World {
   addCollider(-12.95, -12.25, -4.75, -4.25, 0, 1.2);
 
   // ---------- CORRIDOR A (north) ----------
-  addFloor(-3, -9.15, 2.3, 8.0, 0, floorMat);
+  addFloor(-3, -9.15, 2.3, 8.0, 0, floorCorridorAMat);
   addCeiling(-3, -9.15, 2.3, 8.0, H);
-  addWall(-4.15, -12.65, 0.3, 1.0); // west, north piece
-  addWall(-4.15, -7.43, 0.3, 4.85); // west, south piece
-  addWall(-1.85, -9.15, 0.3, 8.0); // east, ends inside the front and dead-end walls
+  addWall(-4.15, -12.65, 0.3, 1.0, 0, H, wallYellowMat); // west, north piece
+  addWall(-4.15, -7.43, 0.3, 4.85, 0, H, wallYellowMat); // west, south piece
+  addWall(-1.85, -12.275, 0.3, 1.75, 0, H, wallYellowMat); // east, north of the kitchen doorway
+  addWall(-1.85, -7.775, 0.3, 5.25, 0, H, wallYellowMat); // east, south of the kitchen doorway
   // dead-end cap, split by the toilet doorway
-  addWall(-4.45, -13.15, 1.1, 0.3);
-  addWall(-1.7, -13.15, 1.4, 0.3);
-  addBox(-3.15, (2.3 + H) / 2, -13.15, 1.5, H - 2.3, 0.34, wallMat); // lintel, visual only
+  addWall(-4.45, -13.15, 1.1, 0.3, 0, H, wallYellowMat);
+  addWall(-1.7, -13.15, 1.4, 0.3, 0, H, wallYellowMat);
+  addBox(-3.15, (2.3 + H) / 2, -13.15, 1.5, H - 2.3, 0.34, wallYellowMat); // lintel, visual only
   addBox(-3.9, 1.18, -13.15, 0.08, 2.36, 0.36, frameMat);
   addBox(-2.4, 1.18, -13.15, 0.08, 2.36, 0.36, frameMat);
 
-  // ---------- TOILET / SHOWER (north of corridor A) ----------
-  addFloor(-3, -16.15, 4, 6, 0, floorMat);
-  addCeiling(-3, -16.15, 4, 6, H);
-  addWall(-5, -16.15, 0.3, 6.3); // west
-  addWall(-1, -16.15, 0.3, 6.3); // east
-  addWall(-3, -19.15, 4.3, 0.3); // north
+  // kitchen doorway: lintel, lining and a hung leaf
+  addBox(-1.85, (2.3 + H) / 2, -10.9, 0.34, H - 2.3, 1.0, wallYellowMat);
+  makeDoor(-1.85, -11.4, -1.85, -10.4);
 
-  const stallMat = new THREE.MeshLambertMaterial({ color: 0x4d514b });
+  // ---------- TOILET / SHOWER (north of corridor A) ----------
+  addFloor(-3, -16.15, 4, 6, 0, floorToiletMat);
+  addCeiling(-3, -16.15, 4, 6, H);
+  addWall(-5, -16.15, 0.3, 6.3, 0, H, wallPlasterMat); // west
+  addWall(-1, -16.15, 0.3, 6.3, 0, H, wallPlasterMat); // east
+  addWall(-3, -19.15, 4.3, 0.3, 0, H, wallPlasterMat); // north
+
+  const stallMat = wood("wood_7_256_.png", 1.4, 0x8a8074); // panelled stall doors
   for (const px of [-3.5, -2.5]) {
     addBox(px, 1.1, -18.5, 0.07, 2.0, 1.3, stallMat);
     addCollider(px - 0.04, px + 0.04, -19.15, -17.85, 0, 2.1);
@@ -292,27 +773,112 @@ export function buildWorld(): World {
   addBox(-3.7, 2.95, -9.1, 0.07, 0.07, 7.9, pipeMat);
   addBox(-2.3, 2.9, -9.1, 0.05, 0.05, 7.9, pipeMat);
 
+  // ---------- KITCHEN (east of corridor A) ----------
+  addFloor(3.15, -9.15, 9.7, 7.7, 0, floorKitchenMat);
+  addCeiling(3.15, -9.15, 9.7, 7.7, H);
+  // starts where the toilet wall ends: two boxes never share a wall face
+  addWall(3.65, -13.15, 9.0, 0.3, 0, H, wallPlasterMat);
+  addWall(8.15, -9.225, 0.3, 7.85, 0, H, wallPlasterMat); // east
+
+  const cabinetMat = new THREE.MeshLambertMaterial({ color: 0x64685e, emissive: 0x0b0e0c });
+  const counterTopMat = new THREE.MeshLambertMaterial({ color: 0x42453c, emissive: 0x080907 });
+  const seamMat = new THREE.MeshLambertMaterial({ color: 0x2b2d28 });
+  const steelMat = new THREE.MeshLambertMaterial({ color: 0x8b9088, emissive: 0x0c0e0c });
+  const stoveMat = new THREE.MeshLambertMaterial({ color: 0x21231f, emissive: 0x070806 });
+  const fridgeMat = new THREE.MeshLambertMaterial({ color: 0x565b55, emissive: 0x0a0c0b });
+  const tableMat = wood("wood_27_256_.png", 1.0, 0x8a8073);
+
+  // counter run along the east wall
+  addBox(7.62, 0.45, -9.25, 0.68, 0.9, 5.3, cabinetMat);
+  addBox(7.6, 0.93, -9.25, 0.74, 0.06, 5.5, counterTopMat);
+  for (const sz of [-10.575, -9.25, -7.925]) {
+    addBox(7.28, 0.47, sz, 0.015, 0.8, 0.02, seamMat);
+  }
+  for (const hz of [-11.4, -10.2, -9.0, -7.8]) {
+    addBox(7.27, 0.72, hz, 0.04, 0.04, 0.24, steelMat);
+  }
+  // sink
+  addBox(7.6, 0.97, -10.9, 0.42, 0.008, 0.56, stoveMat);
+  addBox(7.9, 1.12, -10.9, 0.05, 0.32, 0.05, steelMat);
+  addBox(7.79, 1.28, -10.9, 0.24, 0.05, 0.05, steelMat);
+  // hob
+  addBox(7.6, 0.965, -8.2, 0.6, 0.014, 0.9, stoveMat);
+  for (const bx of [7.43, 7.77]) {
+    for (const bz of [-8.47, -7.93]) {
+      addBox(bx, 0.975, bz, 0.18, 0.012, 0.18, new THREE.MeshLambertMaterial({ color: 0x393c34 }));
+    }
+  }
+  // wall cupboards and extractor hood
+  addBox(7.8, 1.95, -9.4, 0.36, 0.68, 4.4, cabinetMat);
+  for (const sz of [-10.5, -9.4, -8.3]) {
+    addBox(7.625, 1.95, sz, 0.015, 0.62, 0.02, seamMat);
+  }
+  for (const hz of [-11.5, -10.3, -8.5, -7.3]) {
+    addBox(7.615, 1.68, hz, 0.03, 0.03, 0.18, steelMat);
+  }
+  addBox(7.78, 2.52, -8.2, 0.4, 0.12, 0.9, stoveMat); // hood
+  addBox(7.93, 2.75, -8.2, 0.12, 0.4, 0.12, steelMat); // hood duct
+  addBox(7.62, 1.05, -7.95, 0.2, 0.14, 0.18, steelMat); // kettle
+  // fridge in the north-east corner
+  addBox(7.5, 0.9, -12.45, 0.82, 1.8, 0.8, fridgeMat);
+  addBox(7.08, 1.25, -12.45, 0.03, 0.4, 0.05, steelMat);
+  addCollider(7.2, 8.0, -12.0, -6.5, 0, 1.0); // counter
+  addCollider(7.05, 8.0, -12.9, -12.0, 0, 1.9); // fridge
+
+  // small shelf with jars on the north wall
+  addBox(4.5, 1.62, -12.9, 1.5, 0.05, 0.3, cabinetMat);
+  const jarColors = [0x5d6357, 0x6b5f4d, 0x4c534b];
+  for (let k = 0; k < 3; k++) {
+    addBox(3.95 + k * 0.5, 1.76, -12.9, 0.16, 0.24, 0.16, new THREE.MeshLambertMaterial({ color: jarColors[k] }));
+  }
+
+  // table and two chairs
+  addBox(3.6, 0.735, -9.2, 1.8, 0.07, 1.1, tableMat);
+  for (const lx of [2.78, 4.42]) {
+    for (const lz of [-9.68, -8.72]) {
+      addBox(lx, 0.35, lz, 0.07, 0.7, 0.07, tableMat);
+    }
+  }
+  const kitchenChairMat = new THREE.MeshLambertMaterial({ color: 0x4a4b43, emissive: 0x080908 });
+  for (const [cx, cz, back] of [
+    [3.2, -10.05, -10.27],
+    [4.0, -8.35, -8.13],
+  ]) {
+    addBox(cx, 0.46, cz, 0.5, 0.08, 0.5, kitchenChairMat);
+    addBox(cx, 0.76, back, 0.5, 0.56, 0.07, kitchenChairMat);
+    for (const ox of [-0.2, 0.2]) {
+      for (const oz of [-0.2, 0.2]) {
+        addBox(cx + ox, 0.21, cz + oz, 0.05, 0.42, 0.05, kitchenChairMat);
+      }
+    }
+  }
+  addCollider(2.65, 4.55, -9.8, -8.6, 0, 0.8); // table
+  addCollider(2.9, 3.5, -10.35, -9.75, 0, 1.1); // chair
+  addCollider(3.7, 4.3, -8.65, -8.05, 0, 1.1); // chair
+
   // ---------- CORRIDOR B (west) ----------
-  addFloor(-9.1, -11, 10.3, 2.3, 0.002, floorMat);
+  addFloor(-9.1, -11, 10.3, 2.3, 0.002, floorCorridorBMat);
   addCeiling(-9.1, -11, 10.3, 2.3, H - 0.002);
-  addWall(-9.15, -12.15, 10.3, 0.3); // north
-  addWall(-9.15, -9.85, 10.3, 0.3); // south
-  addWall(-14.15, -12.05, 0.3, 0.25); // west posts
-  addWall(-14.15, -9.95, 0.3, 0.25);
+  addWall(-9.15, -12.15, 10.3, 0.3, 0, H, wallRedMat); // north
+  addWall(-9.15, -9.85, 10.3, 0.3, 0, H, wallRedMat); // south
+  addWall(-14.15, -12.05, 0.3, 0.25, 0, H, wallRedMat); // west posts
+  addWall(-14.15, -9.95, 0.3, 0.25, 0, H, wallRedMat);
 
   // ---------- STAIRWELL ----------
   addCeiling(-17, -11, 6.3, 2.6, H - 0.03); // below corridor B's ceiling plane: no z-fighting
-  addWall(-16.075, -12.15, 4.15, 0.3, ARCHIVE_Y, H); // north, right of the technical-stair opening
-  addWall(-16.175, -9.85, 4.35, 0.3, ARCHIVE_Y, H); // south, right of basement door
-  addBox(-19.175, (-0.05 + H) / 2, -9.85, 1.65, H + 0.05, 0.34, wallMat); // lintel above the archive door
-  addWall(-20.15, -11, 0.3, 2.6, ARCHIVE_Y, H); // west
+  addWall(-16.075, -12.15, 4.15, 0.3, ARCHIVE_Y, H, wallPlasterMat); // north, right of the technical-stair opening
+  addWall(-16.175, -10.15, 4.35, 0.3, ARCHIVE_Y, H, wallPlasterMat); // south, right of basement door
+  addBox(-19.175, (-0.05 + H) / 2, -9.85, 1.65, H + 0.05, 0.34, wallPlasterMat); // lintel above the archive door
+  addWall(-20.15, -11, 0.3, 2.6, ARCHIVE_Y, H, wallPlasterMat); // west
   // face under the top landing on the corridor side (no collider: below the floor)
-  addBox(-14.05, ARCHIVE_Y / 2, -11, 0.3, -ARCHIVE_Y, 2.3, wallMat);
-  addFloor(-14.33, -11, 0.75, 2.3, 0.02, floorMat); // top landing, above corridor B's floor plane
-  addFloor(-19.35, -11, 1.7, 2.3, ARCHIVE_Y + 0.002, darkFloorMat); // bottom landing
+  // ends 2 cm behind the archive's north face; any deeper and the slab pokes
+  // out of the wall as a bare plaster strip beside the archive doorway
+  addBox(-14.05, ARCHIVE_Y / 2, -11.02, 0.3, -ARCHIVE_Y, 1.98, wallPlasterMat);
+  addFloor(-14.33, -11, 0.75, 2.3, 0.02, floorStairMat); // top landing, above corridor B's floor plane
+  addFloor(-19.35, -11, 1.7, 2.3, ARCHIVE_Y + 0.002, floorStairMat); // bottom landing
 
   // steps descend westward from the top landing toward the archive door
-  const stepMat = new THREE.MeshLambertMaterial({ color: 0x585c56, emissive: 0x141614 });
+  const stepMat = wood("wood_17_256_.png", 1.4, 0x8f8175);
   for (let k = 1; k <= 4; k++) {
     const top = -0.6 * k;
     const h = top - ARCHIVE_Y;
@@ -320,15 +886,23 @@ export function buildWorld(): World {
   }
 
   // ---------- ARCHIVE (basement) ----------
-  addFloor(-14.25, -5, 11.8, 10.3, ARCHIVE_Y, darkFloorMat);
+  addFloor(-14.25, -5, 11.8, 10.3, ARCHIVE_Y, floorArchiveMat);
   // ceiling kept below ground level: the server room stands on the floor above
   addCeiling(-14.25, -5, 11.8, 10.3, -0.05);
-  addWall(-14.375, -10.15, 7.95, 0.3, ARCHIVE_Y, -0.05); // north, right of basement door
-  addWall(-8.775, -10.15, 0.85, 0.3, ARCHIVE_Y, -0.05); // north, east of the vent exit
-  addWall(-14.25, 0.15, 11.8, 0.3, ARCHIVE_Y, -0.05); // south
-  addWall(-20.15, -10.075, 0.3, 0.15, ARCHIVE_Y, -0.05); // west jamb above the editing door
-  addWall(-20.15, -4.175, 0.3, 8.65, ARCHIVE_Y, -0.05); // west, south of editing door
-  addWall(-8.35, -5, 0.3, 10.3, ARCHIVE_Y, -0.05); // east
+  addWall(-12.2, -10.15, 3.6, 0.3, ARCHIVE_Y, -0.05, wallYellowMat); // north, right of basement door; starts at the stairwell wall
+  // the stairwell's south wall also forms this stretch of the archive's north
+  // wall; clad its archive face so the room stays papered instead of showing
+  // the bare plaster of the stair shaft
+  addBox(-16.175, (ARCHIVE_Y - 0.05) / 2, -9.98, 4.35, -0.05 - ARCHIVE_Y, 0.02, wallYellowMat);
+  addWall(-8.775, -10.15, 0.85, 0.3, ARCHIVE_Y, -0.05, wallYellowMat); // north, east of the vent exit
+  // header closing the top of the vent exit: the vent ceiling sits at -0.1, so
+  // without it the 6 cm strip between that and the archive ceiling opens into
+  // the plenum above and corridor B's red wallpaper shows as a bright sliver
+  addBox(-9.8, -0.07, -10.075, 1.2, 0.06, 0.15, wallYellowMat);
+  addWall(-14.25, 0.15, 11.8, 0.3, ARCHIVE_Y, -0.05, wallYellowMat); // south
+  addWall(-20.15, -10.075, 0.3, 0.15, ARCHIVE_Y, -0.05, wallYellowMat); // west jamb above the editing door
+  addWall(-20.15, -4.175, 0.3, 8.65, ARCHIVE_Y, -0.05, wallYellowMat); // west, south of editing door
+  addWall(-8.35, -5, 0.3, 10.3, ARCHIVE_Y, -0.05, wallYellowMat); // east
 
   // archive shelves along west wall
   for (let row = 0; row < 2; row++) {
@@ -377,26 +951,26 @@ export function buildWorld(): World {
   }
 
   // ---------- TECHNICAL STAIR (from the lower landing, northward) ----------
-  addWall(-20.15, -13.675, 0.3, 3.05, -4.5, 0.3); // west
-  addWall(-18.15, -13.675, 0.3, 3.05, -4.5, 0.3); // east
+  addWall(-20.15, -13.675, 0.3, 3.05, -4.5, 0.3, wallPlasterMat); // west
+  addWall(-18.15, -13.675, 0.3, 3.05, -4.5, 0.3, wallPlasterMat); // east
   addCeiling(-19.15, -13.675, 2.0, 3.05, 0.3);
   // visual lintels so the low service shaft never opens onto black void
-  addBox(-19.15, (0.3 + H) / 2, -12.15, 2.0, H - 0.3, 0.34, wallMat);
-  addBox(-19.15, (-1.35 + 0.3) / 2, -15.2, 2.0, 1.65, 0.34, wallMat);
+  addBox(-19.15, (0.3 + H) / 2, -12.15, 2.0, H - 0.3, 0.34, wallPlasterMat);
+  addBox(-19.15, (-1.35 + 0.3) / 2, -15.2, 2.0, 1.65, 0.34, wallPlasterMat);
   for (let k = 1; k <= 5; k++) {
     const top = -3 - 0.25 * k;
     const zc = -12.15 - (k - 0.5) * (3.05 / 6);
     addBox(-19.15, (-4.5 + top) / 2, zc, 1.7, top + 4.5, 3.05 / 6, stepMat);
   }
-  addFloor(-19.15, -14.947, 1.7, 0.508, -4.5, darkFloorMat);
+  addFloor(-19.15, -14.947, 1.7, 0.508, -4.5, floorBasementMat);
 
   // ---------- TECHNICAL BASEMENT (-4.5 m) ----------
-  addFloor(-16.2, -20.2, 8, 10, -4.5, darkFloorMat);
+  addFloor(-16.2, -20.2, 8, 10, -4.5, floorBasementMat);
   addCeiling(-16.2, -20.2, 8, 10, -1.35);
-  addWall(-20.2, -20.2, 0.3, 10.3, -4.5, -1.35); // west
-  addWall(-12.2, -20.8, 0.3, 8.8, -4.5, -1.35); // east, south of the vent opening
-  addWall(-16.2, -25.2, 8.3, 0.3, -4.5, -1.35); // north
-  addWall(-15.175, -15.2, 5.95, 0.3, -4.5, -1.35); // south, right of the stair opening
+  addWall(-20.2, -20.2, 0.3, 10.3, -4.5, -1.35, wallPlasterMat); // west
+  addWall(-12.2, -20.8, 0.3, 8.8, -4.5, -1.35, wallPlasterMat); // east, south of the vent opening
+  addWall(-16.2, -25.2, 8.3, 0.3, -4.5, -1.35, wallPlasterMat); // north
+  addWall(-15.175, -15.2, 5.95, 0.3, -4.5, -1.35, wallPlasterMat); // south, right of the stair opening
 
   const junkMat = new THREE.MeshLambertMaterial({ color: 0x3d423c });
   const junkMat2 = new THREE.MeshLambertMaterial({ color: 0x4a4438 });
@@ -424,15 +998,15 @@ export function buildWorld(): World {
   mop.rotation.z = 0.18;
 
   // ---------- VENT CHAMBER (basement -> archive) ----------
-  addBox(-12.2, (-1.35 - 0.1) / 2, -15.8, 0.34, 1.25, 1.2, wallMat); // lintel over the basement opening
-  addWall(-10.7, -16.4, 3.0, 0.3, -4.5, -0.1); // north
-  addWall(-11.3, -15.2, 1.8, 0.3, -4.5, -0.1); // south, west of the turn
-  addWall(-10.4, -12.675, 0.3, 5.05, -4.5, -0.1); // west
-  addWall(-9.2, -13.275, 0.3, 6.25, -4.5, -0.1); // east
+  addBox(-12.2, (-1.35 - 0.1) / 2, -15.8, 0.34, 1.25, 1.2, wallPlasterMat); // lintel over the basement opening
+  addWall(-10.7, -16.4, 3.0, 0.3, -4.5, -0.1, wallPlasterMat); // north
+  addWall(-11.3, -15.2, 1.8, 0.3, -4.5, -0.1, wallPlasterMat); // south, west of the turn
+  addWall(-10.4, -12.675, 0.3, 5.05, -4.5, -0.1, wallPlasterMat); // west
+  addWall(-9.2, -13.275, 0.3, 6.25, -4.5, -0.1, wallPlasterMat); // east
   addCeiling(-10.7, -15.8, 3.0, 1.2, -0.1);
   addCeiling(-9.8, -12.675, 1.2, 5.05, -0.1);
-  addFloor(-10.7, -15.8, 3.0, 1.2, -4.5, darkFloorMat);
-  addFloor(-9.8, -14.3, 1.2, 1.8, -4.5, darkFloorMat);
+  addFloor(-10.7, -15.8, 3.0, 1.2, -4.5, floorBasementMat);
+  addFloor(-9.8, -14.3, 1.2, 1.8, -4.5, floorBasementMat);
   for (let k = 1; k <= 6; k++) {
     const top = -4.5 + 0.25 * k;
     const zc = -13.4 + (k - 0.5) * (3.25 / 6);
@@ -440,14 +1014,14 @@ export function buildWorld(): World {
   }
 
   // ---------- EDITING ROOM (west of the archive) ----------
-  addFloor(-23.225, -7.65, 6.15, 5, ARCHIVE_Y, darkFloorMat);
+  addFloor(-23.225, -7.65, 6.15, 5, ARCHIVE_Y, floorEditMat);
   addCeiling(-23.225, -7.65, 6.15, 5, -0.05);
-  addWall(-26.3, -7.65, 0.3, 5.3, ARCHIVE_Y, -0.05); // west
-  addWall(-23.225, -10.15, 6.45, 0.3, ARCHIVE_Y, -0.05); // north
-  addWall(-23.225, -5.15, 6.45, 0.3, ARCHIVE_Y, -0.05); // south
+  addWall(-26.3, -7.65, 0.3, 5.3, ARCHIVE_Y, -0.05, wallWoodMat); // west
+  addWall(-23.225, -10.15, 6.45, 0.3, ARCHIVE_Y, -0.05, wallWoodMat); // north
+  addWall(-23.225, -5.15, 6.45, 0.3, ARCHIVE_Y, -0.05, wallWoodMat); // south
 
   // doorway in the archive west wall
-  addBox(-20.15, -0.475, -9.25, 0.34, 0.85, 1.5, wallMat); // lintel, visual only
+  addBox(-20.15, -0.475, -9.25, 0.34, 0.85, 1.5, wallYellowMat); // lintel, visual only
   addBox(-20.15, -1.95, -10.0, 0.36, 2.1, 0.08, frameMat);
   addBox(-20.15, -1.95, -8.5, 0.36, 2.1, 0.08, frameMat);
 
@@ -476,6 +1050,57 @@ export function buildWorld(): World {
       );
     }
   }
+
+  // ---------- BEDROOM (south of the archive, west of the control room) ----------
+  addFloor(-13.25, 2.65, 9.9, 4.7, 0, floorBedroomMat);
+  addCeiling(-13.25, 2.65, 9.9, 4.7, H);
+  addWall(-13.3, 0.15, 10.0, 0.3, 0, H, wallGreenMat); // north, butts the archive wall below
+  addWall(-18.35, 2.65, 0.3, 5.3, 0, H, wallGreenMat); // west
+  addWall(-13.3, 5.15, 10.0, 0.3, 0, H, wallGreenMat); // south, meets the control-room back wall
+
+  // doorway in the control room's west wall
+  addBox(-8.15, (2.3 + H) / 2, 2.5, 0.34, H - 2.3, 1.0, wallGreenMat); // lintel, visual only
+  makeDoor(-8.15, 2.0, -8.15, 3.0);
+
+  const bedFrameMat = wood("wood_27_256_.png", 1.0, 0x8a8073);
+  const mattressMat = new THREE.MeshLambertMaterial({ color: 0x8d897c, emissive: 0x0c0d0b });
+  const blanketMat = new THREE.MeshLambertMaterial({ color: 0x3f4640, emissive: 0x080a09 });
+  const pillowMat = new THREE.MeshLambertMaterial({ color: 0xa5a294, emissive: 0x0e0f0c });
+
+  // double bed, headboard against the west wall
+  addBox(-18.14, 0.62, 2.65, 0.08, 1.24, 1.62, bedFrameMat);
+  addBox(-17.12, 0.22, 2.65, 1.94, 0.44, 1.56, bedFrameMat);
+  addBox(-17.1, 0.5, 2.65, 1.86, 0.18, 1.46, mattressMat);
+  addBox(-17.72, 0.64, 2.65, 0.42, 0.12, 1.2, pillowMat);
+  addBox(-16.68, 0.615, 2.65, 1.22, 0.09, 1.5, blanketMat);
+  addCollider(-18.2, -16.12, 1.84, 3.46, 0, 0.9);
+
+  // bedside table and lamp
+  const nightTableMat = wood("wood_27_256_.png", 1.0, 0x827868);
+  addBox(-18.0, 0.3, 1.55, 0.4, 0.6, 0.45, nightTableMat);
+  addBox(-18.0, 0.66, 1.55, 0.16, 0.12, 0.16, new THREE.MeshLambertMaterial({ color: 0x2a2c28 }));
+  addBox(-18.0, 0.8, 1.55, 0.03, 0.18, 0.03, new THREE.MeshLambertMaterial({ color: 0x2a2c28 }));
+  addBox(-18.0, 0.92, 1.55, 0.26, 0.14, 0.26, new THREE.MeshBasicMaterial({ color: 0xc9a978 }));
+  addCollider(-18.2, -17.8, 1.32, 1.78, 0, 0.7);
+
+  // chest at the foot of the bed
+  addBox(-15.85, 0.28, 2.65, 0.55, 0.56, 1.1, bedFrameMat);
+  addCollider(-16.13, -15.57, 2.1, 3.2, 0, 0.6);
+
+  // wardrobe against the south wall
+  const wardrobeMat = wood("wood_7_256_.png", 1.2, 0x7b7267);
+  addBox(-11.0, 1.05, 4.69, 1.8, 2.1, 0.6, wardrobeMat);
+  addBox(-11.15, 1.15, 4.37, 0.04, 0.2, 0.03, steelMat);
+  addBox(-10.85, 1.15, 4.37, 0.04, 0.2, 0.03, steelMat);
+  addCollider(-11.9, -10.1, 4.39, 5.0, 0, 2.1);
+
+  const rug = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.2, 2.2),
+    new THREE.MeshLambertMaterial({ color: 0x3b3830, emissive: 0x070605 }),
+  );
+  rug.rotation.x = -Math.PI / 2;
+  rug.position.set(-14.6, 0.006, 2.9);
+  scene.add(rug);
 
   // ---------- LIGHTS ----------
   const glowTex = makeGlowTexture();
@@ -525,6 +1150,14 @@ export function buildWorld(): World {
   const serverLight = fluorescent(-10.65, 2.85, -3.15, false, 3.2); // server room
   serverLight.color.set(0xb6d2de);
   fluorescent(-23.2, -0.55, -7.65, false, 6.0); // editing room
+  fluorescent(3.2, 2.85, -9.2, false, 4.8); // kitchen
+  fluorescent(-13.2, 2.85, 2.6, false, 3.2); // bedroom
+
+  // bedside lamp glow
+  const bedsideLight = new THREE.PointLight(0xffca86, 1.6, 5, 1.8);
+  bedsideLight.position.set(-17.85, 0.92, 1.55);
+  scene.add(bedsideLight);
+  addGlow(-18.0, 0.92, 1.55, 0xffd09a, 0.6);
 
   // desk lamp with a green shade in the control room
   addBox(-2.2, 1.0, 4.2, 0.16, 0.06, 0.16, new THREE.MeshLambertMaterial({ color: 0x2a2c28 }));
@@ -657,6 +1290,8 @@ export function buildWorld(): World {
     }
     // server room stands on the ground floor over the archive
     if (x >= -13.15 && x <= -8.15 && z >= -5.15 && z <= -1.15) offer(0);
+    if (x >= -1.85 && x <= 8.15 && z >= -13.15 && z <= -5.15) offer(0); // kitchen
+    if (x >= -18.35 && x <= -8.15 && z >= 0.15 && z <= 5.15) offer(0); // bedroom
     if (x >= -20.15 && x <= -8.35 && z >= -10.15 && z <= 0.15) offer(ARCHIVE_Y);
     if (x >= -26.3 && x <= -20.15 && z >= -10.15 && z <= -5.15) offer(ARCHIVE_Y);
 
@@ -696,6 +1331,10 @@ export function buildWorld(): World {
     bulbTop.intensity = 2.0 + Math.sin(time * 3.1) * 0.25;
     bulbBottom.intensity = 2.5 + Math.sin(time * 2.3 + 2) * 0.25;
 
+    for (const d of doors) {
+      d.group.rotation.y += (d.targetAngle - d.group.rotation.y) * Math.min(1, dt * 7.5);
+    }
+
     const pos = dustGeo.getAttribute("position") as THREE.BufferAttribute;
     for (let i = 0; i < dustCount; i++) {
       let y = pos.getY(i) + dt * 0.018 * (1 + Math.sin(dustSeed[i] + time * 0.4));
@@ -709,8 +1348,11 @@ export function buildWorld(): World {
   return {
     scene,
     colliders,
+    doors,
+    toggleDoor,
     update,
     bounds: { minX: -26.2, maxX: 7.9, minZ: -25.5, maxZ: 4.9 },
     groundHeightAt,
+    propsReady,
   };
 }

@@ -1,3 +1,25 @@
+@font-face {
+  font-family: "Gravewire";
+  src: url("/fonts/Gravewire-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Press Start";
+  src: url("/fonts/PressStart2P-cyrillic.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Press Start";
+  src: url("/fonts/PressStart2P-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF;
+  font-display: block;
+}
+
 html,
 body {
   margin: 0;
@@ -51,6 +73,53 @@ canvas {
   font-size: 10px;
   letter-spacing: 0.18em;
   opacity: 0.4;
+}
+
+#prompt {
+  position: fixed;
+  left: 50%;
+  bottom: 12%;
+  transform: translateX(-50%) translateY(4px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: none;
+  opacity: 0;
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+
+#prompt.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+#prompt .key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(190, 230, 205, 0.45);
+  border-radius: 2px;
+  background: rgba(4, 8, 7, 0.6);
+  box-shadow:
+    0 0 14px rgba(120, 255, 185, 0.16),
+    inset 0 0 10px rgba(120, 255, 185, 0.07);
+  font-family: "Gravewire", monospace;
+  font-size: 24px;
+  line-height: 1;
+  color: #e4f3e8;
+  text-shadow: 0 0 7px rgba(150, 255, 200, 0.45);
+}
+
+#prompt .label {
+  font-family: "Press Start", "Menlo", monospace;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  color: rgba(214, 233, 220, 0.85);
+  text-shadow: 0 0 9px rgba(120, 255, 190, 0.3);
 }
 
 #overlay {
